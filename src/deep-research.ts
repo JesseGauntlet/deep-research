@@ -4,38 +4,13 @@ import { compact } from 'lodash-es';
 import pLimit from 'p-limit';
 import { z } from 'zod';
 
-import { o3MiniModel, trimPrompt } from './ai/providers';
-import { systemPrompt } from './prompt';
-import { OutputManager } from './output-manager';
-
-// Initialize output manager for coordinated console/progress output
-const output = new OutputManager();
-
-// Replace console.log with output.log
-function log(...args: any[]) {
-  output.log(...args);
-}
-
-export type ResearchProgress = {
-  currentDepth: number;
-  totalDepth: number;
-  currentBreadth: number;
-  totalBreadth: number;
-  currentQuery?: string;
-  totalQueries: number;
-  completedQueries: number;
-};
-
-type ResearchResult = {
-  learnings: string[];
-  visitedUrls: string[];
-};
+import { o3MiniModel, trimPrompt } from './ai/providers.js';
+import { systemPrompt } from './prompt.js';
 
 // increase this if you have higher API rate limits
-const ConcurrencyLimit = 2;
+const ConcurrencyLimit = 5;
 
 // Initialize Firecrawl with optional API key and optional base url
-
 const firecrawl = new FirecrawlApp({
   apiKey: process.env.FIRECRAWL_KEY ?? '',
   apiUrl: process.env.FIRECRAWL_BASE_URL,
@@ -49,8 +24,6 @@ async function generateSerpQueries({
 }: {
   query: string;
   numQueries?: number;
-
-  // optional, if provided, the research will continue from the last learning
   learnings?: string[];
 }) {
   const res = await generateObject({
@@ -78,10 +51,6 @@ async function generateSerpQueries({
         .describe(`List of SERP queries, max of ${numQueries}`),
     }),
   });
-  log(
-    `Created ${res.object.queries.length} queries`,
-    res.object.queries,
-  );
 
   return res.object.queries.slice(0, numQueries);
 }
@@ -100,7 +69,6 @@ async function processSerpResult({
   const contents = compact(result.data.map(item => item.markdown)).map(
     content => trimPrompt(content, 25_000),
   );
-  log(`Ran ${query}, found ${contents.length} contents`);
 
   const res = await generateObject({
     model: o3MiniModel,
@@ -120,10 +88,6 @@ async function processSerpResult({
         ),
     }),
   });
-  log(
-    `Created ${res.object.learnings.length} learnings`,
-    res.object.learnings,
-  );
 
   return res.object;
 }
@@ -175,29 +139,10 @@ export async function deepResearch({
   visitedUrls?: string[];
   onProgress?: (progress: ResearchProgress) => void;
 }): Promise<ResearchResult> {
-  const progress: ResearchProgress = {
-    currentDepth: depth,
-    totalDepth: depth,
-    currentBreadth: breadth,
-    totalBreadth: breadth,
-    totalQueries: 0,
-    completedQueries: 0,
-  };
-  
-  const reportProgress = (update: Partial<ResearchProgress>) => {
-    Object.assign(progress, update);
-    onProgress?.(progress);
-  };
-
   const serpQueries = await generateSerpQueries({
     query,
     learnings,
     numQueries: breadth,
-  });
-  
-  reportProgress({
-    totalQueries: serpQueries.length,
-    currentQuery: serpQueries[0]?.query
   });
   
   const limit = pLimit(ConcurrencyLimit);
@@ -226,17 +171,6 @@ export async function deepResearch({
           const allUrls = [...visitedUrls, ...newUrls];
 
           if (newDepth > 0) {
-            log(
-              `Researching deeper, breadth: ${newBreadth}, depth: ${newDepth}`,
-            );
-
-            reportProgress({
-              currentDepth: newDepth,
-              currentBreadth: newBreadth,
-              completedQueries: progress.completedQueries + 1,
-              currentQuery: serpQuery.query,
-            });
-
             const nextQuery = `
             Previous research goal: ${serpQuery.researchGoal}
             Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
@@ -250,37 +184,52 @@ export async function deepResearch({
               visitedUrls: allUrls,
               onProgress,
             });
-          } else {
-            reportProgress({
-              currentDepth: 0,
-              completedQueries: progress.completedQueries + 1,
-              currentQuery: serpQuery.query,
-            });
-            return {
-              learnings: allLearnings,
-              visitedUrls: allUrls,
-            };
           }
-        } catch (e: any) {
-          if (e.message && e.message.includes('Timeout')) {
-            log(
-              `Timeout error running query: ${serpQuery.query}: `,
-              e,
-            );
-          } else {
-            log(`Error running query: ${serpQuery.query}: `, e);
-          }
+
           return {
-            learnings: [],
-            visitedUrls: [],
+            learnings: allLearnings,
+            visitedUrls: allUrls,
+          };
+        } catch (error) {
+          console.error(`Error processing query "${serpQuery.query}":`, error);
+          return {
+            learnings,
+            visitedUrls,
           };
         }
       }),
     ),
   );
 
+  // Combine all results
+  const allResults = results.reduce(
+    (acc, result) => {
+      if (!result) return acc;
+      return {
+        learnings: [...acc.learnings, ...result.learnings],
+        visitedUrls: [...acc.visitedUrls, ...result.visitedUrls],
+      };
+    },
+    { learnings: [], visitedUrls: [] } as ResearchResult,
+  );
+
   return {
-    learnings: [...new Set(results.flatMap(r => r.learnings))],
-    visitedUrls: [...new Set(results.flatMap(r => r.visitedUrls))],
+    learnings: [...new Set(allResults.learnings)],
+    visitedUrls: [...new Set(allResults.visitedUrls)],
   };
 }
+
+export type ResearchProgress = {
+  currentDepth: number;
+  totalDepth: number;
+  currentBreadth: number;
+  totalBreadth: number;
+  currentQuery?: string;
+  totalQueries: number;
+  completedQueries: number;
+};
+
+type ResearchResult = {
+  learnings: string[];
+  visitedUrls: string[];
+};
