@@ -157,8 +157,10 @@ export async function deepResearch({
             scrapeOptions: { formats: ['markdown'] },
           });
 
+          console.log('Firecrawl response:', JSON.stringify(result.data, null, 2));
           // Collect URLs from this search
           const newUrls = compact(result.data.map(item => item.url));
+          console.log('Collected URLs:', newUrls);
           const newBreadth = Math.ceil(breadth / 2);
           const newDepth = depth - 1;
 

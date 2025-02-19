@@ -1,0 +1,1 @@
+{"type":"tool_call","params":{"name":"research","arguments":{"query":"What is TypeScript?","depth":1,"breadth":2}}}
